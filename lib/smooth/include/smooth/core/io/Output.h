@@ -18,30 +18,40 @@ limitations under the License.
 #pragma once
 
 #include <driver/gpio.h>
+#include <driver/include/driver/ledc.h>
+#include <stdio.h>
 
-namespace smooth::core::io
-{
-    class Output
-    {
-        public:
-            Output(gpio_num_t io, bool active_high, bool pull_up, bool pull_down, bool clear_on_creation = true);
+#include "driver/ledc.h"
 
-            void set();
+namespace smooth::core::io {
+class Output {
+ public:
+  Output(gpio_num_t io, bool active_high, bool pull_up, bool pull_down,
+         bool clear_on_creation = true);
 
-            void set(bool active);
+  void set();
 
-            void clr();
+  void set(bool active);
 
-            Output(const Output&) = delete;
+  void clr();
 
-            Output& operator=(const Output&) = delete;
+  void setupPwm(ledc_channel_t f_channel, ledc_timer_bit_t f_resolution,
+                uint32_t f_frequency);
 
-            bool operator==(const Output& other);
+  void setDutyCycle(uint32_t f_pwmDuty);
 
-            bool operator!=(const Output& other);
+  Output(const Output&) = delete;
 
-        private:
-            gpio_num_t io;
-            bool active_high;
-    };
-}
+  Output& operator=(const Output&) = delete;
+
+  bool operator==(const Output& other);
+
+  bool operator!=(const Output& other);
+
+ private:
+  gpio_num_t io;
+  bool active_high;
+
+  ledc_channel_config_t ledc_channel;
+};
+}  // namespace smooth::core::io
