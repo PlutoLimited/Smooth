@@ -32,7 +32,7 @@ namespace smooth::core::io::i2c {
 // I2C specification: http://www.nxp.com/docs/en/user-guide/UM10204.pdf
 
 constexpr const char* log_tag = "I2CMasterDevice";
-constexpr const std::chrono::milliseconds timeout(20);
+constexpr const std::chrono::milliseconds timeout(2);
 
 bool I2CMasterDevice::write(uint8_t address, std::vector<uint8_t>& data,
                             bool expect_ack) {
