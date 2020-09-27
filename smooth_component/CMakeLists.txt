@@ -36,6 +36,7 @@ idf_component_register(SRCS ${SMOOTH_SOURCES}
                             nvs_flash
                             fatfs
                             libsodium
+                            wifi_provisioning
                             )
 
 add_subdirectory(${COMPONENT_DIR}/../externals/fmt ${CMAKE_BINARY_DIR}/externals/fmt)
