@@ -22,6 +22,7 @@ limitations under the License.
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wconversion"
 #pragma GCC diagnostic ignored "-Wsign-conversion"
+#include <esp_log.h>
 #include <esp_wifi.h>
 #include <wifi_provisioning/manager.h>
 #pragma GCC diagnostic pop
@@ -93,6 +94,13 @@ class Wifi {
   void close_if();
 
   static void publish_status(bool connected, bool ip_changed);
+
+  static esp_err_t custom_prov_data_handler(uint32_t session_id,
+                                            const uint8_t* inbuf, ssize_t inlen,
+                                            uint8_t** outbuf, ssize_t* outlen,
+                                            void* priv_data);
+
+  static void get_device_service_name(char* service_name, size_t max);
 
   bool auto_connect_to_ap = false;
   bool connected_to_ap = false;
