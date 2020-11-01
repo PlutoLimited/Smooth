@@ -54,9 +54,9 @@ Wifi::Wifi() {
                                       &Wifi::wifi_event_callback, this,
                                       &instance_ip_event);
 
-  // esp_event_handler_instance_register(WIFI_PROV_EVENT, ESP_EVENT_ANY_ID,
-  //                                    &Wifi::wifi_event_callback, this,
-  //                                    &instance_ip_event);
+  esp_event_handler_instance_register(WIFI_PROV_EVENT, ESP_EVENT_ANY_ID,
+                                      &Wifi::wifi_event_callback, this,
+                                      &instance_prov_event);
 }
 
 Wifi::~Wifi() {
@@ -64,6 +64,10 @@ Wifi::~Wifi() {
                                         instance_ip_event);
   esp_event_handler_instance_unregister(WIFI_EVENT, ESP_EVENT_ANY_ID,
                                         instance_wifi_event);
+
+  esp_event_handler_instance_unregister(WIFI_PROV_EVENT, ESP_EVENT_ANY_ID,
+                                        instance_prov_event);
+
   esp_wifi_disconnect();
   esp_wifi_stop();
   esp_wifi_deinit();
@@ -106,19 +110,13 @@ void Wifi::connect_to_ap() {
   connect();
 }
 
-void Wifi::connect() const {
-#ifdef ESP_PLATFORM
-  esp_wifi_set_mode(WIFI_MODE_STA);
-  esp_wifi_start();
-  esp_wifi_connect();
-#else
-
-  // Assume network is available when running under POSIX system.
-  publish_status(true, true);
-#endif
-}
-
 bool Wifi::is_connected_to_ap() const { return connected_to_ap; }
+
+bool Wifi::is_provisioning_ble() const { return provisioning_active; }
+
+bool Wifi::is_should_save_creds() const { return should_save_creds; }
+
+void Wifi::setCredentialsSaved() { should_save_creds = false; }
 
 void Wifi::wifi_event_callback(void* event_handler_arg,
                                esp_event_base_t event_base, int32_t event_id,
@@ -129,10 +127,16 @@ void Wifi::wifi_event_callback(void* event_handler_arg,
 
   if (event_base == WIFI_EVENT) {
     if (event_id == WIFI_EVENT_STA_START) {
-      esp_netif_set_hostname(wifi->interface, wifi->host_name.c_str());
+      // esp_netif_set_hostname(wifi->interface, wifi->host_name.c_str());
+      Log::info("NET::WIFI::CB", "WIFI EVENT STA START");
+      // esp_wifi_connect();
     } else if (event_id == WIFI_EVENT_STA_CONNECTED) {
+      Log::info("NET::WIFI::CB", "WIFI EVENT STA CONNECTED");
       wifi->connected_to_ap = true;
+
     } else if (event_id == WIFI_EVENT_STA_DISCONNECTED) {
+      Log::info("NET::WIFI::CB",
+                "WIFI EVENT STA DISCONNECTED. Connecting to the AP again...");
       wifi->ip.addr = 0;
       wifi->connected_to_ap = false;
       publish_status(wifi->connected_to_ap, true);
@@ -141,24 +145,28 @@ void Wifi::wifi_event_callback(void* event_handler_arg,
         esp_wifi_stop();
         wifi->connect();
       }
+
     } else if (event_id == WIFI_EVENT_AP_START) {
       wifi->ip.addr = 0xC0A80401;  // 192.168.4.1
       publish_status(true, true);
+
     } else if (event_id == WIFI_EVENT_AP_STOP) {
       wifi->ip.addr = 0;
-      Log::info("SoftAP", "AP stopped");
+      Log::info("NET::WIFI::CB", "AP stopped");
       publish_status(false, true);
+
     } else if (event_id == WIFI_EVENT_AP_STACONNECTED) {
       auto data = reinterpret_cast<wifi_event_ap_staconnected_t*>(event_data);
-      Log::info("SoftAP",
+      Log::info("NET::WIFI::CB",
                 "Station connected. MAC: {}:{}:{}:{}:{}:{} join, AID={}",
                 data->mac[0], data->mac[1], data->mac[2], data->mac[3],
                 data->mac[4], data->mac[5], data->aid);
+
     } else if (event_id == WIFI_EVENT_AP_STADISCONNECTED) {
       auto data =
           reinterpret_cast<wifi_event_ap_stadisconnected_t*>(event_data);
 
-      Log::info("SoftAP",
+      Log::info("NET::WIFI::CB",
                 "Station disconnected. MAC: {}:{}:{}:{}:{}:{} join, AID={}",
                 data->mac[0], data->mac[1], data->mac[2], data->mac[3],
                 data->mac[4], data->mac[5], data->aid);
@@ -181,21 +189,25 @@ void Wifi::wifi_event_callback(void* event_handler_arg,
     switch (event_id) {
       case WIFI_PROV_START:
         Log::info("NET::WIFI::CB", "Provisioning started");
+        wifi->provisioning_active = true;
         break;
       case WIFI_PROV_CRED_RECV: {
         wifi_sta_config_t* wifi_sta_cfg = (wifi_sta_config_t*)event_data;
         Log::info("NET::WIFI::CB",
                   "Received Wi-Fi credentials"
-                  "\n\tSSID     : %s\n\tPassword : %s",
+                  "\n\tSSID     : {}\n\tPassword : {}",
                   (const char*)wifi_sta_cfg->ssid,
                   (const char*)wifi_sta_cfg->password);
+
+        wifi->set_ap_credentials((const char*)wifi_sta_cfg->ssid,
+                                 (const char*)wifi_sta_cfg->password);
         break;
       }
       case WIFI_PROV_CRED_FAIL: {
         wifi_prov_sta_fail_reason_t* reason =
             (wifi_prov_sta_fail_reason_t*)event_data;
         Log::error("NET::WIFI::CB",
-                   "Provisioning failed!\n\tReason : %s"
+                   "Provisioning failed!\n\tReason : {}"
                    "\n\tPlease reset to factory and retry provisioning",
                    (*reason == WIFI_PROV_STA_AUTH_ERROR)
                        ? "Wi-Fi station authentication failed"
@@ -203,10 +215,13 @@ void Wifi::wifi_event_callback(void* event_handler_arg,
         break;
       }
       case WIFI_PROV_CRED_SUCCESS:
+        // save credentials flag
         Log::info("NET::WIFI::CB", "Provisioning successful");
+        wifi->should_save_creds = true;
         break;
       case WIFI_PROV_END:
         /* De-initialize manager once provisioning is finished */
+        wifi->provisioning_active = false;
         wifi_prov_mgr_deinit();
         break;
       default:
@@ -239,8 +254,17 @@ esp_err_t Wifi::custom_prov_data_handler(uint32_t session_id,
 }
 
 void Wifi::start_ble_provisioning() {
+  /* Initialize TCP/IP */
+  // ESP_ERROR_CHECK(esp_netif_init());
+
+  /* Initialize the event loop */
+  // ESP_ERROR_CHECK(esp_event_loop_create_default());
+  // wifi_event_group = xEventGroupCreate();
+
   /* Initialize Wi-Fi including netif with default config */
-  esp_netif_create_default_wifi_sta();
+  close_if();
+  interface = esp_netif_create_default_wifi_sta();
+
   wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
   ESP_ERROR_CHECK(esp_wifi_init(&cfg));
 
@@ -268,88 +292,90 @@ void Wifi::start_ble_provisioning() {
   ESP_ERROR_CHECK(wifi_prov_mgr_is_provisioned(&provisioned));
 
   /* If device is not yet provisioned start provisioning service */
-  if (!provisioned) {
-    Log::info("NET::WIFI::PROV", "Starting provisioning");
+  // if (!provisioned) {
+  Log::info("NET::WIFI::PROV", "Starting provisioning");
 
-    /* What is the Device Service Name that we want
-     * This translates to :
-     *     - Wi-Fi SSID when scheme is wifi_prov_scheme_softap
-     *     - device name when scheme is wifi_prov_scheme_ble
-     */
-    char service_name[12];
-    get_device_service_name(service_name, sizeof(service_name));
+  /* What is the Device Service Name that we want
+   * This translates to :
+   *     - Wi-Fi SSID when scheme is wifi_prov_scheme_softap
+   *     - device name when scheme is wifi_prov_scheme_ble
+   */
+  char service_name[12];
+  get_device_service_name(service_name, sizeof(service_name));
 
-    /* What is the security level that we want (0 or 1):
-     *      - WIFI_PROV_SECURITY_0 is simply plain text communication.
-     *      - WIFI_PROV_SECURITY_1 is secure communication which consists of
-     * secure handshake using X25519 key exchange and proof of possession (pop)
-     * and AES-CTR for encryption/decryption of messages.
-     */
-    wifi_prov_security_t security = WIFI_PROV_SECURITY_1;
+  /* What is the security level that we want (0 or 1):
+   *      - WIFI_PROV_SECURITY_0 is simply plain text communication.
+   *      - WIFI_PROV_SECURITY_1 is secure communication which consists of
+   * secure handshake using X25519 key exchange and proof of possession (pop)
+   * and AES-CTR for encryption/decryption of messages.
+   */
+  wifi_prov_security_t security = WIFI_PROV_SECURITY_1;
 
-    /* Do we want a proof-of-possession (ignored if Security 0 is selected):
-     *      - this should be a string with length > 0
-     *      - NULL if not used
-     */
-    const char* pop = "abcd1234";
+  /* Do we want a proof-of-possession (ignored if Security 0 is selected):
+   *      - this should be a string with length > 0
+   *      - NULL if not used
+   */
+  const char* pop = NULL;
 
-    /* What is the service key (could be NULL)
-     * This translates to :
-     *     - Wi-Fi password when scheme is wifi_prov_scheme_softap
-     *     - simply ignored when scheme is wifi_prov_scheme_ble
-     */
-    const char* service_key = NULL;
+  /* What is the service key (could be NULL)
+   * This translates to :
+   *     - Wi-Fi password when scheme is wifi_prov_scheme_softap
+   *     - simply ignored when scheme is wifi_prov_scheme_ble
+   */
+  const char* service_key = NULL;
 
-    /* This step is only useful when scheme is wifi_prov_scheme_ble. This will
-     * set a custom 128 bit UUID which will be included in the BLE advertisement
-     * and will correspond to the primary GATT service that provides
-     * provisioning endpoints as GATT characteristics. Each GATT characteristic
-     * will be formed using the primary service UUID as base, with different
-     * auto assigned 12th and 13th bytes (assume counting starts from 0th byte).
-     * The client side applications must identify the endpoints by reading the
-     * User Characteristic Description descriptor (0x2901) for each
-     * characteristic, which contains the endpoint name of the characteristic */
-    uint8_t custom_service_uuid[] = {
-        /* LSB <---------------------------------------
-         * ---------------------------------------> MSB */
-        0xb4, 0xdf, 0x5a, 0x1c, 0x3f, 0x6b, 0xf4, 0xbf,
-        0xea, 0x4a, 0x82, 0x03, 0x04, 0x90, 0x1a, 0x02,
-    };
-    wifi_prov_scheme_ble_set_service_uuid(custom_service_uuid);
+  /* This step is only useful when scheme is wifi_prov_scheme_ble. This will
+   * set a custom 128 bit UUID which will be included in the BLE advertisement
+   * and will correspond to the primary GATT service that provides
+   * provisioning endpoints as GATT characteristics. Each GATT characteristic
+   * will be formed using the primary service UUID as base, with different
+   * auto assigned 12th and 13th bytes (assume counting starts from 0th byte).
+   * The client side applications must identify the endpoints by reading the
+   * User Characteristic Description descriptor (0x2901) for each
+   * characteristic, which contains the endpoint name of the characteristic */
+  uint8_t custom_service_uuid[] = {
+      /* LSB <---------------------------------------
+       * ---------------------------------------> MSB */
+      0xb4, 0xdf, 0x5a, 0x1c, 0x3f, 0x6b, 0xf4, 0xbf,
+      0xea, 0x4a, 0x82, 0x03, 0x04, 0x90, 0x1a, 0x02,
+  };
+  wifi_prov_scheme_ble_set_service_uuid(custom_service_uuid);
 
-    /* An optional endpoint that applications can create if they expect to
-     * get some additional custom data during provisioning workflow.
-     * The endpoint name can be anything of your choice.
-     * This call must be made before starting the provisioning.
-     */
-    wifi_prov_mgr_endpoint_create("custom-data");
-    /* Start provisioning service */
-    ESP_ERROR_CHECK(wifi_prov_mgr_start_provisioning(
-        security, pop, service_name, service_key));
+  /* An optional endpoint that applications can create if they expect to
+   * get some additional custom data during provisioning workflow.
+   * The endpoint name can be anything of your choice.
+   * This call must be made before starting the provisioning.
+   */
+  wifi_prov_mgr_endpoint_create("custom-data");
+  /* Start provisioning service */
+  ESP_ERROR_CHECK(wifi_prov_mgr_start_provisioning(security, pop, service_name,
+                                                   service_key));
 
-    /* The handler for the optional endpoint created above.
-     * This call must be made after starting the provisioning, and only if the
-     * endpoint has already been created above.
-     */
-    wifi_prov_mgr_endpoint_register("custom-data", custom_prov_data_handler,
-                                    nullptr);
+  provisioning_active = true;
 
-    /* Uncomment the following to wait for the provisioning to finish and then
-     * release the resources of the manager. Since in this case
-     * de-initialization is triggered by the default event loop handler, we
-     * don't need to call the following */
-    // wifi_prov_mgr_wait();
-    // wifi_prov_mgr_deinit();
-  } else {
+  /* The handler for the optional endpoint created above.
+   * This call must be made after starting the provisioning, and only if the
+   * endpoint has already been created above.
+   */
+  wifi_prov_mgr_endpoint_register("custom-data", custom_prov_data_handler,
+                                  nullptr);
+
+  /* Uncomment the following to wait for the provisioning to finish and then
+   * release the resources of the manager. Since in this case
+   * de-initialization is triggered by the default event loop handler, we
+   * don't need to call the following */
+  // wifi_prov_mgr_wait();
+  // wifi_prov_mgr_deinit();
+  /*} else {
     Log::info("NET::WIFI::PROV", "Already provisioned, starting Wi-Fi STA");
 
-    /* We don't need the manager as device is already provisioned,
-     * so let's release it's resources */
+    // We don't need the manager as device is already provisioned,
+    // so let's release it's resources
     wifi_prov_mgr_deinit();
 
-    /* Start Wi-Fi station */
+    // Start Wi-Fi station
     connect();
-  }
+  }*/
 }
 
 void Wifi::get_device_service_name(char* service_name, size_t max) {
@@ -446,5 +472,15 @@ void Wifi::publish_status(bool connected, bool ip_changed) {
                                           : network::NetworkEvent::DISCONNECTED,
                                 ip_changed);
   core::ipc::Publisher<network::NetworkStatus>::publish(status);
+}
+
+void Wifi::connect() const {
+#ifdef ESP_PLATFORM
+  esp_wifi_start();
+  esp_wifi_connect();
+#else
+  // Assume network is available when running under POSIX system.
+  publish_status(true, true);
+#endif
 }
 }  // namespace smooth::core::network

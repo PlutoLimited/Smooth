@@ -65,6 +65,16 @@ class Wifi {
   /// \return
   [[nodiscard]] bool is_connected_to_ap() const;
 
+  /// Returns a value indicating of currently BLE provisioning active.
+  /// \return
+  [[nodiscard]] bool is_provisioning_ble() const;
+
+  /// Returns a value indicating of valid credentials available that need to be
+  /// saved \return
+  [[nodiscard]] bool is_should_save_creds() const;
+
+  void setCredentialsSaved();
+
   /// Returns a value indicating if the required settings are set.
   /// \return true or false.
   [[nodiscard]] bool is_configured() const {
@@ -88,6 +98,10 @@ class Wifi {
   /// Start provisioning using ble
   void start_ble_provisioning();
 
+  std::string ssid{};
+
+  std::string password{};
+
  private:
   void connect() const;
 
@@ -104,14 +118,15 @@ class Wifi {
 
   bool auto_connect_to_ap = false;
   bool connected_to_ap = false;
+  bool provisioning_active = false;
+  bool should_save_creds = false;
   std::string host_name = "Smooth-Wifi";
-  std::string ssid{};
 
-  std::string password{};
   static struct esp_ip4_addr ip;
 
   esp_netif_t* interface{nullptr};
   esp_event_handler_instance_t instance_wifi_event{};
   esp_event_handler_instance_t instance_ip_event{};
+  esp_event_handler_instance_t instance_prov_event{};
 };
 }  // namespace smooth::core::network
