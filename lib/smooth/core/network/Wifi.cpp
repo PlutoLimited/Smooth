@@ -80,10 +80,14 @@ void Wifi::set_ap_credentials(const std::string& wifi_ssid,
                               const std::string& wifi_password) {
   this->ssid = wifi_ssid;
   this->password = wifi_password;
+  Log::info("NET::WIFI",
+            " Wi-Fi credentials set"
+            "\n\tSSID     : {}\n\tPassword : {}",
+            this->ssid, this->password);
 }
 
 void Wifi::set_auto_connect(bool auto_connect) {
-  auto_connect_to_ap = auto_connect;
+  this->auto_connect_to_ap = auto_connect;
 }
 
 void Wifi::connect_to_ap() {
@@ -113,6 +117,8 @@ void Wifi::connect_to_ap() {
 bool Wifi::is_connected_to_ap() const { return connected_to_ap; }
 
 bool Wifi::is_provisioning_ble() const { return provisioning_active; }
+
+bool Wifi::is_provisioning_failed() const { return provisioning_failed; }
 
 bool Wifi::is_should_save_creds() const { return should_save_creds; }
 
@@ -206,6 +212,7 @@ void Wifi::wifi_event_callback(void* event_handler_arg,
       case WIFI_PROV_CRED_FAIL: {
         wifi_prov_sta_fail_reason_t* reason =
             (wifi_prov_sta_fail_reason_t*)event_data;
+        wifi->provisioning_failed = true;
         Log::error("NET::WIFI::CB",
                    "Provisioning failed!\n\tReason : {}"
                    "\n\tPlease reset to factory and retry provisioning",
@@ -218,9 +225,11 @@ void Wifi::wifi_event_callback(void* event_handler_arg,
         // save credentials flag
         Log::info("NET::WIFI::CB", "Provisioning successful");
         wifi->should_save_creds = true;
+        wifi->provisioning_failed = false;
         break;
       case WIFI_PROV_END:
         /* De-initialize manager once provisioning is finished */
+        Log::info("NET::WIFI::CB", "Provisioning stopped");
         wifi->provisioning_active = false;
         wifi_prov_mgr_deinit();
         break;
