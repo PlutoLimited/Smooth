@@ -44,20 +44,7 @@ using namespace smooth::core;
 namespace smooth::core::network {
 struct esp_ip4_addr Wifi::ip = {0};
 
-Wifi::Wifi() {
-  esp_netif_init();
-  esp_event_handler_instance_register(WIFI_EVENT, ESP_EVENT_ANY_ID,
-                                      &Wifi::wifi_event_callback, this,
-                                      &instance_wifi_event);
-
-  esp_event_handler_instance_register(IP_EVENT, ESP_EVENT_ANY_ID,
-                                      &Wifi::wifi_event_callback, this,
-                                      &instance_ip_event);
-
-  esp_event_handler_instance_register(WIFI_PROV_EVENT, ESP_EVENT_ANY_ID,
-                                      &Wifi::wifi_event_callback, this,
-                                      &instance_prov_event);
-}
+Wifi::Wifi() { initialise_wifi(); }
 
 Wifi::~Wifi() {
   esp_event_handler_instance_unregister(IP_EVENT, ESP_EVENT_ANY_ID,
@@ -72,6 +59,30 @@ Wifi::~Wifi() {
   esp_wifi_stop();
   esp_wifi_deinit();
   esp_netif_deinit();
+}
+
+void Wifi::initialise_wifi() {
+  // s_wifi_event_group = xEventGroupCreate();
+
+  ESP_ERROR_CHECK(esp_netif_init());
+
+  // ESP_ERROR_CHECK(esp_event_loop_create_default());
+  esp_netif_create_default_wifi_sta();
+
+  wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
+  ESP_ERROR_CHECK(esp_wifi_init(&cfg));
+
+  ESP_ERROR_CHECK(esp_event_handler_instance_register(
+      WIFI_EVENT, ESP_EVENT_ANY_ID, &Wifi::wifi_event_callback, this,
+      &instance_wifi_event));
+
+  ESP_ERROR_CHECK(esp_event_handler_instance_register(
+      IP_EVENT, ESP_EVENT_ANY_ID, &Wifi::wifi_event_callback, this,
+      &instance_ip_event));
+
+  ESP_ERROR_CHECK(esp_event_handler_instance_register(
+      WIFI_PROV_EVENT, ESP_EVENT_ANY_ID, &Wifi::wifi_event_callback, this,
+      &instance_prov_event));
 }
 
 void Wifi::set_host_name(const std::string& name) { host_name = name; }
@@ -92,24 +103,18 @@ void Wifi::set_auto_connect(bool auto_connect) {
 
 void Wifi::connect_to_ap() {
   // Prepare to connect to the provided SSID and password
-  wifi_init_config_t init = WIFI_INIT_CONFIG_DEFAULT();
-  esp_wifi_init(&init);
-  esp_wifi_set_mode(WIFI_MODE_STA);
-
   wifi_config_t config;
   memset(&config, 0, sizeof(config));
   copy_min_to_buffer(ssid.begin(), ssid.length(), config.sta.ssid);
   copy_min_to_buffer(password.begin(), password.length(), config.sta.password);
-
   config.sta.bssid_set = false;
 
   // Store Wifi settings in RAM - it is the applications responsibility to store
   // settings.
   esp_wifi_set_storage(WIFI_STORAGE_RAM);
-  esp_wifi_set_config(WIFI_IF_STA, &config);
 
-  close_if();
-  interface = esp_netif_create_default_wifi_sta();
+  ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));
+  ESP_ERROR_CHECK(esp_wifi_set_config(ESP_IF_WIFI_STA, &config));
 
   connect();
 }
@@ -118,9 +123,11 @@ bool Wifi::is_connected_to_ap() const { return connected_to_ap; }
 
 bool Wifi::is_provisioning_ble() const { return provisioning_active; }
 
-bool Wifi::is_provisioning_failed() const { return provisioning_failed; }
-
 bool Wifi::is_should_save_creds() const { return should_save_creds; }
+
+bool Wifi::is_prov_ended() const { return prov_ended; }
+
+bool Wifi::is_prov_success() const { return prov_success; }
 
 void Wifi::setCredentialsSaved() { should_save_creds = false; }
 
@@ -212,30 +219,32 @@ void Wifi::wifi_event_callback(void* event_handler_arg,
       case WIFI_PROV_CRED_FAIL: {
         wifi_prov_sta_fail_reason_t* reason =
             (wifi_prov_sta_fail_reason_t*)event_data;
-        wifi->provisioning_failed = true;
         Log::error("NET::WIFI::CB",
                    "Provisioning failed!\n\tReason : {}"
                    "\n\tPlease reset to factory and retry provisioning",
                    (*reason == WIFI_PROV_STA_AUTH_ERROR)
                        ? "Wi-Fi station authentication failed"
                        : "Wi-Fi access-point not found");
+        // try multiple times
+        wifi_prov_mgr_stop_provisioning();
         break;
       }
       case WIFI_PROV_CRED_SUCCESS:
         // save credentials flag
         Log::info("NET::WIFI::CB", "Provisioning successful");
         wifi->should_save_creds = true;
-        wifi->provisioning_failed = false;
+        wifi->prov_success = true;
         break;
       case WIFI_PROV_END:
         /* De-initialize manager once provisioning is finished */
         Log::info("NET::WIFI::CB", "Provisioning stopped");
         wifi->provisioning_active = false;
+        wifi->prov_ended = true;
         wifi_prov_mgr_deinit();
         break;
       default:
         break;
-    }
+    }  // namespace smooth::core::network
   }
 }
 
@@ -263,42 +272,25 @@ esp_err_t Wifi::custom_prov_data_handler(uint32_t session_id,
 }
 
 void Wifi::start_ble_provisioning() {
-  /* Initialize TCP/IP */
-  // ESP_ERROR_CHECK(esp_netif_init());
-
-  /* Initialize the event loop */
-  // ESP_ERROR_CHECK(esp_event_loop_create_default());
-  // wifi_event_group = xEventGroupCreate();
-
   /* Initialize Wi-Fi including netif with default config */
-  close_if();
-  interface = esp_netif_create_default_wifi_sta();
+  // close_if();
+  // interface = esp_netif_create_default_wifi_sta();
 
   wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
   ESP_ERROR_CHECK(esp_wifi_init(&cfg));
 
   /* Configuration for the provisioning manager */
   wifi_prov_mgr_config_t config = {
-      /* What is the Provisioning Scheme that we want ?
-       * wifi_prov_scheme_softap or wifi_prov_scheme_ble */
       .scheme = wifi_prov_scheme_ble,
-      /* Any default scheme specific event handler that you would
-       * like to choose. Since our example application requires
-       * neither BT nor BLE, we can choose to release the associated
-       * memory once provisioning is complete, or not needed
-       * (in case when device is already provisioned). Choosing
-       * appropriate scheme specific event handler allows the manager
-       * to take care of this automatically. This can be set to
-       * WIFI_PROV_EVENT_HANDLER_NONE when using wifi_prov_scheme_softap*/
       .scheme_event_handler = WIFI_PROV_SCHEME_BLE_EVENT_HANDLER_FREE_BTDM};
 
   /* Initialize provisioning manager with the
    * configuration parameters set above */
   ESP_ERROR_CHECK(wifi_prov_mgr_init(config));
 
-  bool provisioned = false;
+  // bool provisioned = false;
   /* Let's find out if the device is provisioned */
-  ESP_ERROR_CHECK(wifi_prov_mgr_is_provisioned(&provisioned));
+  // ESP_ERROR_CHECK(wifi_prov_mgr_is_provisioned(&provisioned));
 
   /* If device is not yet provisioned start provisioning service */
   // if (!provisioned) {
@@ -368,23 +360,13 @@ void Wifi::start_ble_provisioning() {
    */
   wifi_prov_mgr_endpoint_register("custom-data", custom_prov_data_handler,
                                   nullptr);
+}
 
-  /* Uncomment the following to wait for the provisioning to finish and then
-   * release the resources of the manager. Since in this case
-   * de-initialization is triggered by the default event loop handler, we
-   * don't need to call the following */
-  // wifi_prov_mgr_wait();
-  // wifi_prov_mgr_deinit();
-  /*} else {
-    Log::info("NET::WIFI::PROV", "Already provisioned, starting Wi-Fi STA");
-
-    // We don't need the manager as device is already provisioned,
-    // so let's release it's resources
-    wifi_prov_mgr_deinit();
-
-    // Start Wi-Fi station
-    connect();
-  }*/
+void Wifi::end_ble_provisioning() {
+  wifi_prov_mgr_stop_provisioning();
+  provisioning_active = false;
+  should_save_creds = false;
+  prov_success = false;
 }
 
 void Wifi::get_device_service_name(char* service_name, size_t max) {

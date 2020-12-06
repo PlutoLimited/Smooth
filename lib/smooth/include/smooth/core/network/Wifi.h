@@ -69,13 +69,15 @@ class Wifi {
   /// \return
   [[nodiscard]] bool is_provisioning_ble() const;
 
-  /// Returns a value indicating of currently BLE provisioning active.
-  /// \return
-  [[nodiscard]] bool is_provisioning_failed() const;
-
   /// Returns a value indicating of valid credentials available that need to be
   /// saved \return
   [[nodiscard]] bool is_should_save_creds() const;
+
+  /// Returns a value indicating of valid credentials available that need to be
+  /// saved \return
+  [[nodiscard]] bool is_prov_ended() const;
+
+  [[nodiscard]] bool is_prov_success() const;
 
   void setCredentialsSaved();
 
@@ -102,11 +104,15 @@ class Wifi {
   /// Start provisioning using ble
   void start_ble_provisioning();
 
+  void end_ble_provisioning();
+
   std::string ssid{};
 
   std::string password{};
 
  private:
+  void initialise_wifi();
+
   void connect() const;
 
   void close_if();
@@ -124,7 +130,8 @@ class Wifi {
   bool connected_to_ap = false;
   bool provisioning_active = false;
   bool should_save_creds = false;
-  bool provisioning_failed = false;
+  bool prov_ended = false;
+  bool prov_success = false;
   std::string host_name = "Smooth-Wifi";
 
   static struct esp_ip4_addr ip;
