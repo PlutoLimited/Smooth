@@ -1,3 +1,5 @@
+# Clone of https://github.com/PerMalmberg/Smooth
+
 # Smooth
 C++ framework for writing applications based on Espressif's ESP-IDF.
 
